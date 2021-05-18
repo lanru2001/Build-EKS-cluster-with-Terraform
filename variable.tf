@@ -191,3 +191,8 @@ variable "deployments_subdomains" {
   description = "List of subdomains to be routed to Kubernetes Services."
 }
     
+# create some variables
+variable "namespaces" {
+  type        = list(string)
+  description = "List of namespaces to be created in our EKS Cluster."
+}
