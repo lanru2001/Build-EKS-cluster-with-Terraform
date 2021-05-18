@@ -26,3 +26,4 @@ ingress_gateway_annotations = {
   "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-connection-idle-timeout" = "60",
   "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-type"                    = "elb"
 }
+namespaces = ["sample-apps"]
