@@ -202,3 +202,15 @@ resource "aws_route53_record" "deployments_subdomains" {
   ttl     = "5"
   records = ["${data.kubernetes_service.ingress_gateway.load_balancer_ingress.0.hostname}"]
 }
+
+# create all Namespaces into EKS
+resource "kubernetes_namespace" "eks_namespaces" {
+  for_each = toset(var.namespaces)
+
+  metadata {
+    annotations = {
+      name = each.key
+    }
+    name = each.key
+  }
+}
