@@ -7,5 +7,7 @@ https://itnext.io/build-an-eks-cluster-with-terraform-d35db8005963
 https://gitlab.com/nicosingh/medium-deploy-eks-cluster-using-terraform
 
 
+![image](https://user-images.githubusercontent.com/59709429/120262735-e5527480-c25f-11eb-9da4-90d1d66c521c.png)
 
-![image](https://user-images.githubusercontent.com/59709429/118576602-76005f00-b74e-11eb-8f3e-da7c5b870064.png)
+
+#![image](https://user-images.githubusercontent.com/59709429/118576602-76005f00-b74e-11eb-8f3e-da7c5b870064.png)
