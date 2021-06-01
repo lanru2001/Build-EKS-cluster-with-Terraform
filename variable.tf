@@ -1,198 +1,296 @@
-# create some variables
+terraform {
+  required_version = ">= 0.12"
+}
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Module Standard Variables
+# ----------------------------------------------------------------------------------------------------------------------
+
+variable "aws_region" {
+  type        = string
+  default     = ""
+  description = "The AWS region to deploy module into"
+}
+
+variable "create" {
+  type        = bool
+  default     = true
+  description = "Set to false to prevent the module from creating any resources"
+}
+
+variable "namespace" {
+  type        = string
+  default     = ""
+  description = "Namespace, which could be your organization abbreviation, client name, etc. (e.g. Gravicore 'grv', HashiCorp 'hc')"
+}
+
+variable "environment" {
+  type        = string
+  default     = ""
+  description = "The isolated environment the module is associated with (e.g. Shared Services `shared`, Application `app`)"
+}
+
+variable "stage" {
+  type        = string
+  default     = ""
+  description = "The development stage (i.e. `dev`, `stg`, `prd`)"
+}
+
+variable "account_id" {
+  type        = string
+  default     = ""
+  description = "The AWS Account ID that contains the calling entity"
+}
+
+#variable "tags" {
+#  type        = map(string)
+#  default     = ""
+#  description = "Additional map of tags (e.g. business_unit, cost_center)"
+#}
+
+variable "desc_prefix" {
+  type        = string
+  default     = ""
+  description = "The prefix to add to any descriptions attached to resources"
+}
+
+variable "delimiter" {
+  type        = string
+  default     = "-"
+  description = "Delimiter to be used between `namespace`, `environment`, `stage`, `name`"
+}
+
+variable "s3_bucket_versioning" {
+  type        = bool
+  description = "S3 bucket versioning enabled"
+  default     = true
+}
+
+variable "sse_algorithm" {
+  type        = string
+  default     = "AES256"
+  description = "The server-side encryption algorithm to use. Valid values are `AES256` and `aws:kms`"
+}
+
+variable "kms_master_key_arn" {
+  type        = string
+  default     = ""
+  description = "The AWS KMS master key ARN used for the `SSE-KMS` encryption. This can only be used when you set the value of `sse_algorithm` as `aws:kms`. The default aws/s3 AWS KMS master key is used if this element is absent while the `sse_algorithm` is `aws:kms`"
+}
+
+variable "name" {
+  type        = string
+  default     = ""
+  description = "The name of the module"
+}
+
+variable "vpc_cidr" {
+  type = string
+  default = ""
+}
+
+variable "vpc_id" {
+  type = string
+  default = ""
+}
+
+variable "ec2_count" {
+  type = number 
+  default = 1
+}
+
+variable "azs" {
+  type = list(string)
+  default = [ "" ]
+}
+
+variable "public_subnets_cidr" {
+  type = list(string)
+  default =  [ "" ]
+}
+
+variable "private_subnets_cidr" {
+   type = list(string)
+   default =  [ "" ]
+}
+
+variable "cloudwatch_log_group_name" {
+  description = "CloudWatch log group name required to enabled logDriver in container definitions for ecs task."
+  type        = string
+  default     = ""
+}
+
+variable "cloudwatch_log_stream" {
+  description = "CloudWatch log stream name"
+  type        = string
+  default     = ""
+}
+
+variable "app_image" {
+  description = "Docker image of the application"
+  default     = ""
+}
+
+variable "fargate_cpu" {
+  type        = number 
+  description = "The cpu for the fargate container"
+  default     = 64
+}
+
+variable "fargate_memory" {
+  type        = number 
+  description = "The memory for the fargate container"
+  default     = 128
+}
+
+variable "container_port" {
+  type        = number 
+  description = "container port for the application"
+  default     = 3000
+}
+
+variable "delimiter" {
+  type        = string
+  default     = "-"
+  description = "Delimiter to be used between `namespace`, `environment`, `stage`, `name`"
+}
+
+variable "bucket_name" {
+  description = "Number of ALB log bucket"
+  default     = ""
+}
+
 variable "cluster_name" {
   type        = string
-  description = "EKS cluster name."
+  default     = ""
+  description = "The name of the ecs cluster"
 }
-variable "iac_environment_tag" {
-  type        = string
-  description = "AWS tag to indicate environment name of each infrastructure object."
+
+variable "enabled" {
+  type        = bool
+  description = "Whether to create the resources. Set to `false` to prevent the module from creating any resources"
+  default     = true
 }
+
 variable "name_prefix" {
+  description = "A prefix used for naming resources."
   type        = string
-  description = "Prefix to be used on each infrastructure object Name created in AWS."
-}
-variable "main_network_block" {
-  type        = string
-  description = "Base CIDR block to be used in our VPC."
-}
-variable "subnet_prefix_extension" {
-  type        = number
-  description = "CIDR block bits extension to calculate CIDR blocks of each subnetwork."
-}
-variable "zone_offset" {
-  type        = number
-  description = "CIDR block bits extension offset to calculate Public subnets, avoiding collisions with Private subnets."
 }
 
-# get all available AZs in our region
-data "aws_availability_zones" "available_azs" {
-  state = "available"
-}
-
-# reserve Elastic IP to be used in our NAT gateway
-resource "aws_eip" "nat_gw_elastic_ip" {
-  vpc = true
-
-  tags = {
-    Name            = "${var.cluster_name}-nat-eip"
-    iac_environment = var.iac_environment_tag
-  }
-}
-
-# create VPC using the official AWS module
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "2.44.0"
-
-  name = "${var.name_prefix}-vpc"
-  cidr = var.main_network_block
-  azs  = data.aws_availability_zones.available_azs.names
-
-  private_subnets = [
-    # this loop will create a one-line list as ["10.0.0.0/20", "10.0.16.0/20", "10.0.32.0/20", ...]
-    # with a length depending on how many Zones are available
-    for zone_id in data.aws_availability_zones.available_azs.zone_ids :
-    cidrsubnet(var.main_network_block, var.subnet_prefix_extension, tonumber(substr(zone_id, length(zone_id) - 1, 1)) - 1)
-  ]
-
-  public_subnets = [
-    # this loop will create a one-line list as ["10.0.128.0/20", "10.0.144.0/20", "10.0.160.0/20", ...]
-    # with a length depending on how many Zones are available
-    # there is a zone Offset variable, to make sure no collisions are present with private subnet blocks
-    for zone_id in data.aws_availability_zones.available_azs.zone_ids :
-    cidrsubnet(var.main_network_block, var.subnet_prefix_extension, tonumber(substr(zone_id, length(zone_id) - 1, 1)) + var.zone_offset - 1)
-  ]
-
-  # enable single NAT Gateway to save some money
-  # WARNING: this could create a single point of failure, since we are creating a NAT Gateway in one AZ only
-  # feel free to change these options if you need to ensure full Availability without the need of running 'terraform apply'
-  # reference: https://registry.terraform.io/modules/terraform-aws-modules/vpc/aws/2.44.0#nat-gateway-scenarios
-  enable_nat_gateway     = true
-  single_nat_gateway     = true
-  one_nat_gateway_per_az = false
-  enable_dns_hostnames   = true
-  reuse_nat_ips          = true
-  external_nat_ip_ids    = [aws_eip.nat_gw_elastic_ip.id]
-
-  # add VPC/Subnet tags required by EKS
-  tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    iac_environment                             = var.iac_environment_tag
-  }
-  public_subnet_tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/elb"                    = "1"
-    iac_environment                             = var.iac_environment_tag
-  }
-  private_subnet_tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/internal-elb"           = "1"
-    iac_environment                             = var.iac_environment_tag
-  }
-}
-
-# create some variables
-variable "admin_users" {
+variable "task_container_command" {
+  description = "The command that is passed to the container."
+  default     = []
   type        = list(string)
-  description = "List of Kubernetes admins."
-}
-variable "developer_users" {
-  type        = list(string)
-  description = "List of Kubernetes developers."
-}
-variable "asg_instance_types" {
-  type        = list(string)
-  description = "List of EC2 instance machine types to be used in EKS."
-}
-variable "autoscaling_minimum_size_by_az" {
-  type        = number
-  description = "Minimum number of EC2 instances to autoscale our EKS cluster on each AZ."
-}
-variable "autoscaling_maximum_size_by_az" {
-  type        = number
-  description = "Maximum number of EC2 instances to autoscale our EKS cluster on each AZ."
-}
-variable "autoscaling_average_cpu" {
-  type        = number
-  description = "Average CPU threshold to autoscale EKS EC2 instances."
-}
-variable "spot_termination_handler_chart_name" {
-  type        = string
-  description = "EKS Spot termination handler Helm chart name."
-}
-variable "spot_termination_handler_chart_repo" {
-  type        = string
-  description = "EKS Spot termination handler Helm repository name."
-}
-variable "spot_termination_handler_chart_version" {
-  type        = string
-  description = "EKS Spot termination handler Helm chart version."
-}
-variable "spot_termination_handler_chart_namespace" {
-  type        = string
-  description = "Kubernetes namespace to deploy EKS Spot termination handler Helm chart."
 }
 
-# create some variables
-variable "dns_base_domain" {
+variable "task_container_working_directory" {
+  description = "The working directory to run commands inside the container."
+  default     = ""
   type        = string
-  description = "DNS Zone name to be used from EKS Ingress."
 }
-variable "ingress_gateway_chart_name" {
+
+variable "placement_constraints" {
+  type        = list
+  description = "(Optional) A set of placement constraints rules that are taken into consideration during task placement. Maximum number of placement_constraints is 10. This is a list of maps, where each map should contain \"type\" and \"expression\""
+  default     = []
+}
+
+variable "proxy_configuration" {
+  type        = list
+  description = "(Optional) The proxy configuration details for the App Mesh proxy. This is a list of maps, where each map should contain \"container_name\", \"properties\" and \"type\""
+  default     = []
+}
+
+variable "volume" {
+  description = "(Optional) A set of volume blocks that containers in your task may use. This is a list of maps, where each map should contain \"name\", \"host_path\", \"docker_volume_configuration\" and \"efs_volume_configuration\". Full set of options can be found at https://www.terraform.io/docs/providers/aws/r/ecs_task_definition.html"
+  default     = []
+}
+
+variable "task_start_timeout" {
+  type        = number
+  description = "Time duration (in seconds) to wait before giving up on resolving dependencies for a container. If this parameter is not specified, the default value of 3 minutes is used (fargate)."
+  default     = null
+}
+
+variable "task_stop_timeout" {
+  type        = number
+  description = "Time duration (in seconds) to wait before the container is forcefully killed if it doesn't exit normally on its own. The max stop timeout value is 120 seconds and if the parameter is not specified, the default value of 30 seconds is used."
+  default     = null
+}
+
+variable "task_mount_points" {
+  description = "The mount points for data volumes in your container. Each object inside the list requires \"sourceVolume\", \"containerPath\" and \"readOnly\". For more information see https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html "
+  type        = list(object({ sourceVolume = string, containerPath = string, readOnly = bool }))
+  default     = null
+}
+
+variable "prevent_destroy" {
+  type        = bool
+  description = "S3 bucket lifecycle prevent destroy"
+  default     = true
+}
+
+variable "bucket_prefix" {
   type        = string
-  description = "Ingress Gateway Helm chart name."
+  description = "S3 bucket prefix"
+  default     = "db-treat"
 }
-variable "ingress_gateway_chart_repo" {
+
+variable "s3_bucket_versioning" {
+  type        = bool
+  description = "S3 bucket versioning enabled?"
+  default     = true
+}
+
+variable "environment" {
   type        = string
-  description = "Ingress Gateway Helm repository name."
+  description = "The isolated environment the module is associated with (e.g. Shared Services `shared`, Application `app`)"
+  default     = ""
 }
-variable "ingress_gateway_chart_version" {
+
+variable "namespace" {
   type        = string
-  description = "Ingress Gateway Helm chart version."
+  description = "Namespace, which could be your organization abbreviation, client name, etc. (e.g. uclib)"
+  default     = ""
 }
-variable "ingress_gateway_annotations" {
-  type        = map(string)
-  description = "Ingress Gateway Annotations required for EKS."
-}    
-    
-# render Admin & Developer users list with the structure required by EKS module
+
+variable "stage" {
+  type        = string
+  default     = ""
+  description = "The development stage (i.e. `dev`, `stg`, `prd`)"
+}
+
+variable "health_check_path" {
+  type        = string
+  description = "Path to check if the service is healthy , e.g \"/status\""
+  default     = "/health"
+}
+
+variable "ami_id" {
+  type        = string
+  default     = ""
+  description = "The Amazon machine image to use "
+}
+
+variable "PATH_TO_PRIVATE_KEY" {
+  type    = string
+  default = ""
+}
+
+variable "PATH_TO_PUBLIC_KEY" {
+  type    = string
+  default = ""
+}
+
+variable "instance_type" {
+  type    = string
+  default = ""
+}
+
 locals {
-  admin_user_map_users = [
-    for admin_user in var.admin_users :
-    {
-      userarn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${admin_user}"
-      username = admin_user
-      groups   = ["system:masters"]
-    }
-  ]
-  developer_user_map_users = [
-    for developer_user in var.developer_users :
-    {
-      userarn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${developer_user}"
-      username = developer_user
-      groups   = ["${var.name_prefix}-developers"]
-    }
-  ]
-  worker_groups_launch_template = [
-    {
-      override_instance_types = var.asg_instance_types
-      asg_desired_capacity    = var.autoscaling_minimum_size_by_az * length(data.aws_availability_zones.available_azs.zone_ids)
-      asg_min_size            = var.autoscaling_minimum_size_by_az * length(data.aws_availability_zones.available_azs.zone_ids)
-      asg_max_size            = var.autoscaling_maximum_size_by_az * length(data.aws_availability_zones.available_azs.zone_ids)
-      kubelet_extra_args      = "--node-labels=node.kubernetes.io/lifecycle=spot" # use Spot EC2 instances to save some money and scale more
-      public_ip               = true
-    },
-  ]
-}
-    
-# create some variables
-variable "deployments_subdomains" {
-  type        = list(string)
-  description = "List of subdomains to be routed to Kubernetes Services."
-}
-    
-# create some variables
-variable "namespaces" {
-  type        = list(string)
-  description = "List of namespaces to be created in our EKS Cluster."
+ 
+  environment_prefix = join(var.delimiter, compact([var.namespace, var.environment]))
+  stage_prefix       = join(var.delimiter, compact([local.environment_prefix, var.stage]))
+  module_prefix      = join(var.delimiter, compact([local.stage_prefix, var.name]))
+  #tags              = merge( var.namespace ,var.environment ,var.stage)
 }

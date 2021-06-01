@@ -1,9 +1,9 @@
 terraform {
   backend "s3" {
-    bucket               = "my-vibrant-and-nifty-app-infra"
+    bucket               = "k8s-eks-bucket"
     key                  = "tf-state.json"
-    region               = "us-west-2"
-    workspace_key_prefix = "environment"}
+    region               = "us-east-2"
+    
   }
 }
 

@@ -1,264 +1,501 @@
-# create VPC using the official AWS module
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "2.44.0"
+#Create an Amazon EKS Cluster with Managed Node Group using Terraform
 
-  name = "${var.name_prefix}-vpc"
-  cidr = var.main_network_block
-  azs  = data.aws_availability_zones.available_azs.names
+#VPC 
+resource "aws_vpc" "eks_vpc" {
+  cidr_block              = var.vpc_cidr 
+  enable_dns_support      = true
+  enable_dns_hostnames    = true
 
-  private_subnets = [
-    # this loop will create a one-line list as ["10.0.0.0/20", "10.0.16.0/20", "10.0.32.0/20", ...]
-    # with a length depending on how many Zones are available
-    for zone_id in data.aws_availability_zones.available_azs.zone_ids :
-    cidrsubnet(var.main_network_block, var.subnet_prefix_extension, tonumber(substr(zone_id, length(zone_id) - 1, 1)) - 1)
-  ]
-
-  public_subnets = [
-    # this loop will create a one-line list as ["10.0.128.0/20", "10.0.144.0/20", "10.0.160.0/20", ...]
-    # with a length depending on how many Zones are available
-    # there is a zone Offset variable, to make sure no collisions are present with private subnet blocks
-    for zone_id in data.aws_availability_zones.available_azs.zone_ids :
-    cidrsubnet(var.main_network_block, var.subnet_prefix_extension, tonumber(substr(zone_id, length(zone_id) - 1, 1)) + var.zone_offset - 1)
-  ]
-
-  # enable single NAT Gateway to save some money
-  # WARNING: this could create a single point of failure, since we are creating a NAT Gateway in one AZ only
-  # feel free to change these options if you need to ensure full Availability without the need of running 'terraform apply'
-  # reference: https://registry.terraform.io/modules/terraform-aws-modules/vpc/aws/2.44.0#nat-gateway-scenarios
-  enable_nat_gateway     = true
-  single_nat_gateway     = true
-  one_nat_gateway_per_az = false
-  enable_dns_hostnames   = true
-  reuse_nat_ips          = true
-  external_nat_ip_ids    = [aws_eip.nat_gw_elastic_ip.id]
-
-  # add VPC/Subnet tags required by EKS
-  tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    iac_environment                             = var.iac_environment_tag
-  }
-  public_subnet_tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/elb"                    = "1"
-    iac_environment                             = var.iac_environment_tag
-  }
-  private_subnet_tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/internal-elb"           = "1"
-    iac_environment                             = var.iac_environment_tag
+  tags       = {
+    Name     = "${local.environment_prefix}-dev-vpc"
   }
 }
 
-# create EKS cluster
-module "eks-cluster" {
-  source           = "terraform-aws-modules/eks/aws"
-  version          = "12.1.0"
-  cluster_name     = "${var.cluster_name}"
-  cluster_version  = "1.16"
-  write_kubeconfig = false
+#Private subnets
+resource "aws_subnet" "eks_private_subnets" {
+  count                   = var.create ? 2:0 
+  vpc_id                  = aws_vpc.eks_vpc.id
+  availability_zone       = var.azs[count.index]  
+  cidr_block              = var.private_subnets_cidr[count.index]   
 
-  subnets = module.vpc.private_subnets
-  vpc_id  = module.vpc.vpc_id
-
-  worker_groups_launch_template = local.worker_groups_launch_template
-
-  # map developer & admin ARNs as kubernetes Users
-  map_users = concat(local.admin_user_map_users, local.developer_user_map_users)
-}
-
-# get EKS cluster info to configure Kubernetes and Helm providers
-data "aws_eks_cluster" "cluster" {
-  name = module.eks-cluster.cluster_id
-}
-data "aws_eks_cluster_auth" "cluster" {
-  name = module.eks-cluster.cluster_id
-}
-
-# get EKS authentication for being able to manage k8s objects from terraform
-provider "kubernetes" {
-  host                   = data.aws_eks_cluster.cluster.endpoint
-  cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority.0.data)
-  token                  = data.aws_eks_cluster_auth.cluster.token
-  load_config_file       = false
-  version                = "~> 1.9"
-}
-
-provider "helm" {
-  kubernetes {
-    host                   = data.aws_eks_cluster.cluster.endpoint
-    cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority.0.data)
-    token                  = data.aws_eks_cluster_auth.cluster.token
-    load_config_file       = false
-  }
-  version = "~> 1.2"
-}
-
-# deploy spot termination handler
-resource "helm_release" "spot_termination_handler" {
-  name       = var.spot_termination_handler_chart_name
-  chart      = var.spot_termination_handler_chart_name
-  repository = var.spot_termination_handler_chart_repo
-  version    = var.spot_termination_handler_chart_version
-  namespace  = var.spot_termination_handler_chart_namespace
-}
-
-# add spot fleet Autoscaling policy
-resource "aws_autoscaling_policy" "eks_autoscaling_policy" {
-  count = length(local.worker_groups_launch_template)
-
-  name                   = "${module.eks-cluster.workers_asg_names[count.index]}-autoscaling-policy"
-  autoscaling_group_name = module.eks-cluster.workers_asg_names[count.index]
-  policy_type            = "TargetTrackingScaling"
-
-  target_tracking_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ASGAverageCPUUtilization"
-    }
-    target_value = var.autoscaling_average_cpu
+  tags    = {
+    Name  = "topman-private-subnet-${count.index +1}"
   }
 }
-  
-  
-# get (externally configured) DNS Zone
-data "aws_route53_zone" "base_domain" {
-  name = var.dns_base_domain
+
+#Pubic subnets
+resource "aws_subnet" "eks_public_subnets" {
+  count                    = var.create ? 2:0 
+  vpc_id                   = aws_vpc.eks_vpc.id
+  availability_zone        = var.azs[count.index]    
+  map_public_ip_on_launch  = true
+  cidr_block               = var.public_subnets_cidr[count.index]   
+
+  tags     = {
+    Name   = "topman-public-subnet-${count.index +1}"
+  }
 }
 
-# create AWS-issued SSL certificate
-resource "aws_acm_certificate" "eks_domain_cert" {
-  domain_name               = var.dns_base_domain
-  subject_alternative_names = ["*.${var.dns_base_domain}"]
-  validation_method         = "DNS"
+#IGW
+resource "aws_internet_gateway" "eks_igw" {
+  vpc_id     = aws_vpc.eks_vpc.id
+
+  tags       = {
+    Name   = "${local.environment_prefix}-igw"
+  }
+}
+
+#Route table for public subnet
+resource "aws_route_table" "eks_public_rtable" {
+  count                     = var.create ? 2:0 
+  vpc_id                    = aws_vpc.eks_vpc.id
+
+  route {
+    cidr_block              = "0.0.0.0/0"
+    gateway_id              = aws_internet_gateway.eks_igw.id
+  }
+
+  tags    = {
+    Name  = "${local.environment_prefix }-prtable-${count.index + 1}"
+  }
+
+  depends_on = [ aws_internet_gateway.eks_igw ]
+}
+
+#Route table for private subnet
+resource "aws_route_table" "eks_private_rtable" {
+  count                     = var.create ? 2:0 
+  vpc_id                    = aws_vpc.eks_vpc.id
+
+  #route {
+  #  cidr_block              = "0.0.0.0/0"
+  #  gateway_id              = aws_internet_gateway.eks_igw.id
+  #}
+
+  tags    = {
+    Name  = "${local.environment_prefix }-pvrtable-${count.index + 1}"
+  }
+
+  depends_on = [aws_internet_gateway.eks_igw]
+}
+
+#Assign the route table to public subnets
+resource "aws_route_table_association" "public-subnet-association" {
+  count                     = var.create ? 2:0 
+  subnet_id                 = aws_subnet.eks_public_subnets[count.index].id
+  route_table_id            = aws_route_table.eks_public_rtable[count.index].id
+}
+
+#Assign the route table to private subnets
+resource "aws_route_table_association" "private-subnet-association" {
+  count                     = var.create ? 2:0 
+  subnet_id                 = aws_subnet.eks_private_subnets[count.index].id
+  route_table_id            = aws_route_table.eks_private_rtable[count.index].id
+}
+
+# Public route 
+resource "aws_route" "public_route" {
+  count                     = var.create ? 2:0 
+  route_table_id            = aws_route_table.eks_public_rtable[count.index].id
+  destination_cidr_block    = "0.0.0.0/0"
+  gateway_id                =  aws_internet_gateway.eks_igw.id 
+}
+
+# private route 
+resource "aws_route" "private_route" {
+  count                     = var.create ? 2:0 
+  route_table_id            = aws_route_table.eks_private_rtable[count.index].id
+  destination_cidr_block    = "0.0.0.0/0"
+  nat_gateway_id            = aws_nat_gateway.eks_nat_gw.id
+}
+
+# EIP 
+resource "aws_eip" "nat_eip" {
+   vpc                       = true 
+   #associate_with_private_ip = "10.0.0.5"
+   depends_on                 = [aws_internet_gateway.eks_igw]
+
+}
+
+# NAT Gateway
+resource "aws_nat_gateway" "uclib_nat_gw" {
+  allocation_id             = aws_eip.nat_eip.id
+  subnet_id                 = aws_subnet.eks_public_subnets[0].id
+  depends_on                = [ aws_internet_gateway.eks_igw ]
 
   tags = {
-    Name            = "${var.dns_base_domain}"
-    iac_environment = var.iac_environment_tag
+    Name =  "${local.module_prefix}-nat-gateway"
   }
 }
-resource "aws_route53_record" "eks_domain_cert_validation_dns" {
-  name    = aws_acm_certificate.eks_domain_cert.domain_validation_options.0.resource_record_name
-  type    = aws_acm_certificate.eks_domain_cert.domain_validation_options.0.resource_record_type
-  zone_id = data.aws_route53_zone.base_domain.id
-  records = [aws_acm_certificate.eks_domain_cert.domain_validation_options.0.resource_record_value]
-  ttl     = 60
+
+# Security group 
+resource "aws_security_group" "endpoint_security_group" {
+  name                      = "${local.module_prefix}-sg"
+  vpc_id                    = aws_vpc.eks_vpc.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    protocol    = "tcp"
+    from_port   = 80
+    to_port     = 80
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    protocol    = "tcp"
+    from_port   = 443
+    to_port     = 443
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    protocol    = "tcp"
+    from_port   = 8080
+    to_port     = 8080
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+   ingress {
+    protocol    = "tcp"
+    from_port   = 3000
+    to_port     = 3000
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    =  -1
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  depends_on = [
+      aws_vpc.pipeline_vpc   
+  ]
 }
-resource "aws_acm_certificate_validation" "eks_domain_cert_validation" {
-  certificate_arn         = aws_acm_certificate.eks_domain_cert.arn
-  validation_record_fqdns = [aws_route53_record.eks_domain_cert_validation_dns.fqdn]
+
+resource "aws_network_interface"  "eks_interface" {
+  count                 = var.create ? 2:0 
+  subnet_id             = var.eks_public_subnets[count.index].id 
+  tags =  {
+
+    Name = var.name
+  }
+
 }
 
-# deploy Ingress Controller
-resource "helm_release" "ingress_gateway" {
-  name       = var.ingress_gateway_chart_name
-  chart      = var.ingress_gateway_chart_name
-  repository = var.ingress_gateway_chart_repo
-  version    = var.ingress_gateway_chart_version
 
-  dynamic "set" {
-    for_each = var.ingress_gateway_annotations
+# ECR
+resource "aws_vpc_endpoint" "ecr_dkr" {
+  vpc_id       = "${aws_vpc.eks_vpc.id}"
+  service_name = "com.amazonaws.${var.region}.ecr.dkr"
+  vpc_endpoint_type = "Interface"
+  private_dns_enabled = true
+  subnet_ids          = [ aws_subnet.eks_private_subnet.id , aws_subnet.eks_public_subnet.id ]
+  security_group_ids = [aws_security_group.endpoint_security_group.id]
+  tags = {
+    Name = "endpoint-${var.environment}"
+    Environment = var.environment
+  }
+}
 
-    content {
-      name  = set.key
-      value = set.value
-      type  = "string"
+resource "aws_vpc_endpoint" "ecr_api" {
+  vpc_id       = "${aws_vpc.eks_vpc.id}"
+  service_name = "com.amazonaws.${var.region}.ecr.api"
+  vpc_endpoint_type = "Interface"
+  private_dns_enabled = true
+  subnet_ids          = [aws_subnet.eks_private_subnet.id , aws_subnet.eks_public_subnet.id ]
+  security_group_ids = [aws_security_group.endpoint_security_group.id]
+  tags = {
+    Name = "vpc-endpoint-${var.environment}"
+    Environment = var.environment
+  }
+}
+
+
+
+# S3
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id       = "${aws_vpc.eks_vpc.id}"
+  service_name = "com.amazonaws.${var.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids = [ aws_route_table.eks_private_rtable.id ]     ]
+  tags = {
+    Name = "S3 VPC Endpoint Gateway - ${var.environment}"
+    Environment = var.environment
+  }
+}
+
+
+#EKS Cluster IAM Role
+resource "aws_iam_role" "eks_cluster" {
+  name = "${var.eks_cluster_name}-cluster-${var.environment}"
+  assume_role_policy = <<POLICY
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "eks.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
     }
-  }
-
-  set {
-    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-ssl-cert"
-    value = aws_acm_certificate.eks_domain_cert.id
-  }
+  ]
+}
+POLICY
 }
 
-# create base domain for EKS Cluster
-data "kubernetes_service" "ingress_gateway" {
-  metadata {
-    name = join("-", [helm_release.ingress_gateway.chart, helm_release.ingress_gateway.name])
+resource "aws_iam_role_policy_attachment" "aws_eks_cluster_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = "${aws_iam_role.eks_cluster.name}"
+}
+resource "aws_iam_role_policy_attachment" "aws_eks_service_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+  role       = "${aws_iam_role.eks_cluster.name}"
+}
+
+
+#EKS Cluster
+resource "aws_eks_cluster" "scholar" {
+  name     = var.eks_cluster_name
+  role_arn = "${aws_iam_role.eks_cluster.arn}"
+  vpc_config {
+    security_group_ids      = [aws_security_group.eks_cluster.id, aws_security_group.eks_nodes.id]
+    endpoint_private_access = var.endpoint_private_access
+    endpoint_public_access  = var.endpoint_public_access
+    subnet_ids = var.eks_cluster_subnet_ids
   }
+ # Ensure that IAM Role permissions are created before and deleted after EKS Cluster handling.
   
-  depends_on = [module.eks-cluster]
+  depends_on = [
+    "aws_iam_role_policy_attachment.aws_eks_cluster_policy",
+    "aws_iam_role_policy_attachment.aws_eks_service_policy"
+  ]
 }
-data "aws_elb_hosted_zone_id" "elb_zone_id" {}
-resource "aws_route53_record" "eks_domain" {
-  zone_id = data.aws_route53_zone.base_domain.id
-  name    = var.dns_base_domain
-  type    = "A"
 
-  alias {
-    name                   = data.kubernetes_service.ingress_gateway.load_balancer_ingress.0.hostname
-    zone_id                = data.aws_elb_hosted_zone_id.elb_zone_id.id
-    evaluate_target_health = true
+#EKS Cluster security group
+resource "aws_security_group" "eks_cluster" {
+  name        = var.cluster_sg_name
+  description = "Cluster communication with worker nodes"
+  vpc_id      = var.vpc_id
+  tags = {
+    Name = var.cluster_sg_name
   }
 }
 
-# create all Subdomains required by Kubernetes Deployments
-resource "aws_route53_record" "deployments_subdomains" {
-  for_each = toset(var.deployments_subdomains)
-
-  zone_id = data.aws_route53_zone.base_domain.id
-  name    = "${each.key}.${aws_route53_record.eks_domain.fqdn}"
-  type    = "CNAME"
-  ttl     = "5"
-  records = ["${data.kubernetes_service.ingress_gateway.load_balancer_ingress.0.hostname}"]
+resource "aws_security_group_rule" "cluster_inbound" {
+  description              = "Allow worker nodes to communicate with the cluster API Server"
+  from_port                = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_cluster.id
+  source_security_group_id = aws_security_group.eks_nodes.id
+  to_port                  = 443
+  type                     = "ingress"
+}
+resource "aws_security_group_rule" "cluster_outbound" {
+  description              = "Allow cluster API Server to communicate with the worker nodes"
+  from_port                = 1024
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_cluster.id
+  source_security_group_id = aws_security_group.eks_nodes.id
+  to_port                  = 65535
+  type                     = "egress"
 }
 
-# create all Namespaces into EKS
-resource "kubernetes_namespace" "eks_namespaces" {
-  for_each = toset(var.namespaces)
 
-  metadata {
-    annotations = {
-      name = each.key
+#EKS Worker Node Group Security Group
+resource "aws_security_group" "eks_nodes" {
+  name        = var.nodes_sg_name
+  description = "Security group for all nodes in the cluster"
+  vpc_id      = var.vpc_id
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = {
+    Name                                            = var.nodes_sg_name
+    "kubernetes.io/cluster/${var.eks_cluster_name}" = "owned"
+  }
+}
+resource "aws_security_group_rule" "nodes" {
+  description              = "Allow nodes to communicate with each other"
+  from_port                = 0
+  protocol                 = "-1"
+  security_group_id        = aws_security_group.eks_nodes.id
+  source_security_group_id = aws_security_group.eks_nodes.id
+  to_port                  = 65535
+  type                     = "ingress"
+}
+resource "aws_security_group_rule" "nodes_inbound" {
+  description              = "Allow worker Kubelets and pods to receive communication from the cluster control plane"
+  from_port                = 1025
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.eks_nodes.id
+  source_security_group_id = aws_security_group.eks_cluster.id
+  to_port                  = 65535
+  type                     = "ingress"
+}
+
+
+#Worker Node Group IAM Role
+resource "aws_iam_role" "eks_nodes" {
+   name                 = "${var.eks_cluster_name}-worker-${var.environment}"
+   assume_role_policy   = data.aws_iam_policy_document.assume_workers.json
+}
+
+data "aws_iam_policy_document" "assume_workers" {
+  statement {
+    effect = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+       type        = "Service"
+       identifiers = ["ec2.amazonaws.com"]
     }
-    name = each.key
-  }
-}
-  
-# create developers Role using RBAC
-resource "kubernetes_cluster_role" "iam_roles_developers" {
-  metadata {
-    name = "${var.name_prefix}-developers"
-  }
-
-  rule {
-    api_groups = ["*"]
-    resources  = ["pods", "pods/log", "deployments", "ingresses", "services"]
-    verbs      = ["get", "list"]
-  }
-
-  rule {
-    api_groups = ["*"]
-    resources  = ["pods/exec"]
-    verbs      = ["create"]
-  }
-
-  rule {
-    api_groups = ["*"]
-    resources  = ["pods/portforward"]
-    verbs      = ["*"]
   }
 }
 
-# bind developer Users with their Role
-resource "kubernetes_cluster_role_binding" "iam_roles_developers" {
-  metadata {
-    name = "${var.name_prefix}-developers"
+resource "aws_iam_role_policy_attachment" "aws_eks_worker_node_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+  role       = aws_iam_role.eks_nodes.name
+}
+
+resource "aws_iam_role_policy_attachment" "aws_eks_cni_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+  role       = aws_iam_role.eks_nodes.name
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_read_only" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  role       = aws_iam_role.eks_nodes.name
+}
+
+#Autoscaling policies 
+resource "aws_iam_policy" "cluster_autoscaler_policy" {
+  name        = "ClusterAutoScaler"
+  description = "Give the worker node running the Cluster Autoscaler access to required resources and actions"
+  policy = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "autoscaling:DescribeAutoScalingGroups",
+                "autoscaling:DescribeAutoScalingInstances",
+                "autoscaling:DescribeLaunchConfigurations",
+                "autoscaling:DescribeTags",
+                "autoscaling:SetDesiredCapacity",
+                "autoscaling:TerminateInstanceInAutoScalingGroup"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+EOF
+}
+
+#Autoscaling policy attachment 
+resource "aws_iam_role_policy_attachment" "cluster_autoscaler" {
+  policy_arn = aws_iam_policy.cluster_autoscaler_policy.arn
+  role = aws_iam_role.eks_nodes.name
+}
+
+
+
+
+#Worker Node Groups for Public & Private Subnets
+# Nodes in private subnets
+resource "aws_eks_node_group" "main" {
+  cluster_name    = aws_eks_cluster.scholar.name
+  node_group_name = var.node_group_name
+  node_role_arn   = aws_iam_role.eks_nodes.arn
+  subnet_ids      = var.private_subnet_ids
+  ami_type        = var.ami_type
+  disk_size       = var.disk_size
+  instance_types  = var.instance_types
+  scaling_config {
+    desired_size = var.pvt_desired_size
+    max_size     = var.pvt_max_size
+    min_size     = var.pvt_min_size
   }
-
-  role_ref {
-    api_group = "rbac.authorization.k8s.io"
-    kind      = "ClusterRole"
-    name      = "${var.name_prefix}-developers"
+  tags = {
+    Name = var.node_group_name
   }
+  # Ensure that IAM Role permissions are created before and deleted after EKS Node Group handling.
+  # Otherwise, EKS will not be able to properly delete EC2 Instances and Elastic Network Interfaces.
+  depends_on = [
+    aws_iam_role_policy_attachment.aws_eks_worker_node_policy,
+    aws_iam_role_policy_attachment.aws_eks_cni_policy,
+    aws_iam_role_policy_attachment.ec2_read_only,
+  ]
+}
 
-  dynamic "subject" {
-    for_each = toset(var.developer_users)
+# Nodes in public subnet
+resource "aws_eks_node_group" "public" {
+  cluster_name     = aws_eks_cluster.main.name
+  node_group_name  = "${var.node_group_name}-public"
+  node_role_arn    = aws_iam_role.eks_nodes.arn
+  subnet_ids       = var.public_subnet_ids
+  ami_type         = var.ami_type
+  disk_size        = var.disk_size
+  instance_types   = var.instance_types
+  scaling_config {
+    desired_size   = var.pblc_desired_size
+    max_size       = var.pblc_max_size
+    min_size       = var.pblc_min_size
+  }
+  tags = {
+    Name = "${var.node_group_name}-public"
+  }
+# Ensure that IAM Role permissions are created before and deleted after EKS Node Group handling.
+  # Otherwise, EKS will not be able to properly delete EC2 Instances and Elastic Network Interfaces.
+  depends_on = [
+    aws_iam_role_policy_attachment.aws_eks_worker_node_policy,
+    aws_iam_role_policy_attachment.aws_eks_cni_policy,
+    aws_iam_role_policy_attachment.ec2_read_only,
+  ]
+}
 
-    content {
-      name      = subject.key
-      kind      = "User"
-      api_group = "rbac.authorization.k8s.io"
-    }
+resource "aws_cloudwatch_log_group" "scholar" {
+  # The log group name format is /aws/eks/<cluster-name>/cluster
+  name              = "/aws/eks/${var.cluster_name}/cluster"
+  retention_in_days = 7
+
+}
+
+
+#EC2 Launch configuration 
+resource "aws_launch_configuration" "worker" {
+  iam_instance_profile = "${aws_iam_instance_profile.worker-node.name}"
+  image_id             = "${data.aws_ami.eks-worker.id}"
+  instance_type        = "t3.medium"
+  name_prefix          = "worker-node"
+  security_groups      = ["${aws_security_group.worker-node-sg.id}"]
+  user_data_base64     = "${base64encode(local.worker-node-userdata)}"
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
+
+
+#resource "aws_eks_fargate_profile" "example" {
+#  cluster_name           = aws_eks_cluster.scholar.name
+#  fargate_profile_name   = "scholar"
+#  pod_execution_role_arn = aws_iam_role.scholar.arn
+#  subnet_ids             = aws_subnet.scholar[*].id
+#
+#  selector {
+#    namespace = "Dev"
+#  }
+#}
+
