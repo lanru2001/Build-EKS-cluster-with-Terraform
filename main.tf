@@ -266,6 +266,7 @@ resource "aws_iam_role_policy_attachment" "aws_eks_service_policy" {
 resource "aws_eks_cluster" "scholar" {
   name     = var.eks_cluster_name
   role_arn = "${aws_iam_role.eks_cluster.arn}"
+  version  = var.eks_version
   vpc_config {
     security_group_ids      = [aws_security_group.eks_cluster.id, aws_security_group.eks_nodes.id]
     endpoint_private_access = var.endpoint_private_access
@@ -312,7 +313,7 @@ resource "aws_security_group_rule" "cluster_outbound" {
 
 #EKS Worker Node Group Security Group
 resource "aws_security_group" "eks_nodes" {
-  name        = var.nodes_sg_name
+  name        = var.name 
   description = "Security group for all nodes in the cluster"
   vpc_id      = var.vpc_id
   egress {
@@ -413,8 +414,10 @@ resource "aws_iam_role_policy_attachment" "cluster_autoscaler" {
 
 
 #Worker Node Groups for Public & Private Subnets
+# Deploy some nodes in the public and private subnets and use a single vpc endpoint to enable communication without needing NAT gateway for nodes in 
+#private subnet to communicate with the ones in public subnet
 # Nodes in private subnets
-resource "aws_eks_node_group" "main" {
+resource "aws_eks_node_group" "private" {
   cluster_name    = aws_eks_cluster.scholar.name
   node_group_name = var.node_group_name
   node_role_arn   = aws_iam_role.eks_nodes.arn
@@ -467,7 +470,7 @@ resource "aws_eks_node_group" "public" {
 
 resource "aws_cloudwatch_log_group" "scholar" {
   # The log group name format is /aws/eks/<cluster-name>/cluster
-  name              = "/aws/eks/${var.cluster_name}/cluster"
+  name              = "eks/${var.cluster_name}/cluster"
   retention_in_days = 7
 
 }
@@ -476,18 +479,18 @@ resource "aws_cloudwatch_log_group" "scholar" {
 #EC2 Launch configuration 
 resource "aws_launch_configuration" "worker" {
   iam_instance_profile = "${aws_iam_instance_profile.worker-node.name}"
-  image_id             = "${data.aws_ami.eks-worker.id}"
-  instance_type        = "t3.medium"
+  image_id             = ""
+  instance_type        = ""
   name_prefix          = "worker-node"
   security_groups      = ["${aws_security_group.worker-node-sg.id}"]
-  user_data_base64     = "${base64encode(local.worker-node-userdata)}"
+  user_data            = "${file(launch_config.sh))}"
 
   lifecycle {
     create_before_destroy = true
   }
 }
 
-
+#Use for fargate launch type
 #resource "aws_eks_fargate_profile" "example" {
 #  cluster_name           = aws_eks_cluster.scholar.name
 #  fargate_profile_name   = "scholar"
