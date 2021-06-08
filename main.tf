@@ -19,7 +19,7 @@ resource "aws_subnet" "eks_private_subnets" {
   cidr_block              = var.private_subnets_cidr[count.index]   
 
   tags    = {
-    Name  = "topman-private-subnet-${count.index +1}"
+    Name  = "eks-private-subnet-${count.index +1}"
   }
 }
 
@@ -32,7 +32,7 @@ resource "aws_subnet" "eks_public_subnets" {
   cidr_block               = var.public_subnets_cidr[count.index]   
 
   tags     = {
-    Name   = "topman-public-subnet-${count.index +1}"
+    Name   = "eks-public-subnet-${count.index +1}"
   }
 }
 
@@ -110,7 +110,7 @@ resource "aws_route" "private_route" {
 }
 
 # EIP 
-resource "aws_eip" "nat_eip" {
+resource "aws_eip" "eks_eip" {
    vpc                       = true 
    #associate_with_private_ip = "10.0.0.5"
    depends_on                 = [aws_internet_gateway.eks_igw]
@@ -118,9 +118,9 @@ resource "aws_eip" "nat_eip" {
 }
 
 # NAT Gateway
-resource "aws_nat_gateway" "uclib_nat_gw" {
-  allocation_id             = aws_eip.nat_eip.id
-  subnet_id                 = aws_subnet.eks_public_subnets[0].id
+resource "aws_nat_gateway" "eks_nat_gw" {
+  allocation_id             = aws_eip.eks_eip.id
+  subnet_id                 = aws_subnet.eks_public_subnets[count.index].id
   depends_on                = [ aws_internet_gateway.eks_igw ]
 
   tags = {
@@ -167,7 +167,21 @@ resource "aws_security_group" "endpoint_security_group" {
     to_port     = 3000
     cidr_blocks = ["0.0.0.0/0"]
   }
-
+  
+   ingress {
+    protocol    = "tcp"
+    from_port   = 3306
+    to_port     = 3306
+    cidr_blocks = ["0.0.0.0/0"]
+  }  
+  
+    ingress {
+    protocol    = "udp"
+    from_port   = 53
+    to_port     = 53
+    cidr_blocks = ["0.0.0.0/0"]
+  }  
+  
   egress {
     from_port   = 0
     to_port     = 0
@@ -176,7 +190,7 @@ resource "aws_security_group" "endpoint_security_group" {
   }
 
   depends_on = [
-      aws_vpc.pipeline_vpc   
+      aws_vpc.eks_vpc   
   ]
 }
 
@@ -191,13 +205,13 @@ resource "aws_network_interface"  "eks_interface" {
 }
 
 
-# ECR
-resource "aws_vpc_endpoint" "ecr_dkr" {
+# AWS vpc endpoint
+resource "aws_vpc_endpoint" "eks_dkr" {
   vpc_id       = "${aws_vpc.eks_vpc.id}"
-  service_name = "com.amazonaws.${var.region}.ecr.dkr"
+  service_name = "com.amazonaws.${var.region}.eks.dkr"
   vpc_endpoint_type = "Interface"
   private_dns_enabled = true
-  subnet_ids          = [ aws_subnet.eks_private_subnet.id , aws_subnet.eks_public_subnet.id ]
+  subnet_ids          = [ aws_subnet.eks_private_subnet[count.index].id , aws_subnet.eks_public_subnet[count.index].id ]
   security_group_ids = [aws_security_group.endpoint_security_group.id]
   tags = {
     Name = "endpoint-${var.environment}"
@@ -205,12 +219,12 @@ resource "aws_vpc_endpoint" "ecr_dkr" {
   }
 }
 
-resource "aws_vpc_endpoint" "ecr_api" {
+resource "aws_vpc_endpoint" "eks_api" {
   vpc_id       = "${aws_vpc.eks_vpc.id}"
-  service_name = "com.amazonaws.${var.region}.ecr.api"
+  service_name = "com.amazonaws.${var.region}.eks.api"
   vpc_endpoint_type = "Interface"
   private_dns_enabled = true
-  subnet_ids          = [aws_subnet.eks_private_subnet.id , aws_subnet.eks_public_subnet.id ]
+  subnet_ids          = [aws_subnet.eks_private_subnet[count.index].id , aws_subnet.eks_public_subnet[count.index].id ]
   security_group_ids = [aws_security_group.endpoint_security_group.id]
   tags = {
     Name = "vpc-endpoint-${var.environment}"
@@ -225,45 +239,15 @@ resource "aws_vpc_endpoint" "s3" {
   vpc_id       = "${aws_vpc.eks_vpc.id}"
   service_name = "com.amazonaws.${var.region}.s3"
   vpc_endpoint_type = "Gateway"
-  route_table_ids = [ aws_route_table.eks_private_rtable.id ]     ]
+  route_table_ids = [ aws_route_table.eks_private_rtable[count.index].id ]     ]
   tags = {
     Name = "S3 VPC Endpoint Gateway - ${var.environment}"
     Environment = var.environment
   }
 }
 
-
-#EKS Cluster IAM Role
-resource "aws_iam_role" "eks_cluster" {
-  name = "${var.eks_cluster_name}-cluster-${var.environment}"
-  assume_role_policy = <<POLICY
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Service": "eks.amazonaws.com"
-      },
-      "Action": "sts:AssumeRole"
-    }
-  ]
-}
-POLICY
-}
-
-resource "aws_iam_role_policy_attachment" "aws_eks_cluster_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-  role       = "${aws_iam_role.eks_cluster.name}"
-}
-resource "aws_iam_role_policy_attachment" "aws_eks_service_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
-  role       = "${aws_iam_role.eks_cluster.name}"
-}
-
-
 #EKS Cluster
-resource "aws_eks_cluster" "scholar" {
+resource "aws_eks_cluster" "eks_uclib" {
   name     = var.eks_cluster_name
   role_arn = "${aws_iam_role.eks_cluster.arn}"
   version  = var.eks_version
@@ -345,72 +329,6 @@ resource "aws_security_group_rule" "nodes_inbound" {
   to_port                  = 65535
   type                     = "ingress"
 }
-
-
-#Worker Node Group IAM Role
-resource "aws_iam_role" "eks_nodes" {
-   name                 = "${var.eks_cluster_name}-worker-${var.environment}"
-   assume_role_policy   = data.aws_iam_policy_document.assume_workers.json
-}
-
-data "aws_iam_policy_document" "assume_workers" {
-  statement {
-    effect = "Allow"
-    actions = ["sts:AssumeRole"]
-    principals {
-       type        = "Service"
-       identifiers = ["ec2.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role_policy_attachment" "aws_eks_worker_node_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-  role       = aws_iam_role.eks_nodes.name
-}
-
-resource "aws_iam_role_policy_attachment" "aws_eks_cni_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-  role       = aws_iam_role.eks_nodes.name
-}
-
-resource "aws_iam_role_policy_attachment" "ec2_read_only" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-  role       = aws_iam_role.eks_nodes.name
-}
-
-#Autoscaling policies 
-resource "aws_iam_policy" "cluster_autoscaler_policy" {
-  name        = "ClusterAutoScaler"
-  description = "Give the worker node running the Cluster Autoscaler access to required resources and actions"
-  policy = <<EOF
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "autoscaling:DescribeAutoScalingGroups",
-                "autoscaling:DescribeAutoScalingInstances",
-                "autoscaling:DescribeLaunchConfigurations",
-                "autoscaling:DescribeTags",
-                "autoscaling:SetDesiredCapacity",
-                "autoscaling:TerminateInstanceInAutoScalingGroup"
-            ],
-            "Resource": "*"
-        }
-    ]
-}
-EOF
-}
-
-#Autoscaling policy attachment 
-resource "aws_iam_role_policy_attachment" "cluster_autoscaler" {
-  policy_arn = aws_iam_policy.cluster_autoscaler_policy.arn
-  role = aws_iam_role.eks_nodes.name
-}
-
-
 
 
 #Worker Node Groups for Public & Private Subnets
@@ -501,4 +419,3 @@ resource "aws_launch_configuration" "worker" {
 #    namespace = "Dev"
 #  }
 #}
-
