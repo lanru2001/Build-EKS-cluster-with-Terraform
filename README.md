@@ -1,5 +1,3 @@
-Build-EKS-cluster-with-Terraform
-
 #Build-EKS-cluster-with-Terraform
 
 EKS Cluster core components are:
