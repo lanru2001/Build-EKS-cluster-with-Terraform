@@ -232,8 +232,6 @@ resource "aws_vpc_endpoint" "eks_api" {
   }
 }
 
-
-
 # S3
 resource "aws_vpc_endpoint" "s3" {
   vpc_id       = "${aws_vpc.eks_vpc.id}"
@@ -329,7 +327,6 @@ resource "aws_security_group_rule" "nodes_inbound" {
   to_port                  = 65535
   type                     = "ingress"
 }
-
 
 #Worker Node Groups for Public & Private Subnets
 # Deploy some nodes in the public and private subnets and use a single vpc endpoint to enable communication without needing NAT gateway for nodes in 
