@@ -1,14 +1,11 @@
-#Build-EKS-cluster-with-Terraform
+## Build-EKS-cluster-with-Terraform
 
-EKS Cluster core components are:
+## EKS Cluster core components are:
 
-EKS control plane
-
-Worker nodes and node groups
-
-Fargate profiles
-
-VPC
+- EKS control plane
+- Worker nodes and node groups
+- Fargate profiles
+- VPC
 
 Note: Fargate profile can be created only if your vpc has a minimum of one private subnets.
 
