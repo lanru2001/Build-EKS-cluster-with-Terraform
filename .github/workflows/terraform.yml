@@ -30,6 +30,22 @@ jobs:
       with:
         cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 
+    # Install Python 
+    - name: Setup Python
+      uses: actions/setup-python@v1
+      with: 
+          python-version: "3.7"
+
+    # Authenticate AWS Configure
+    - name: AWS Configure
+      run: aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+      run: aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      run: aws configure set default.region us-east-1 
+          
+    #Install AWSCLI
+    - name: install AWS CLI
+      run: pip install awscli
+
     # Initialize a new or existing Terraform working directory by creating initial files, loading any remote state, downloading modules, etc.
     - name: Terraform Init
       run: terraform init
