@@ -26,7 +26,7 @@ jobs:
 
     # Install the latest version of Terraform CLI and configure the Terraform CLI configuration file with a Terraform Cloud user API token
     - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v1
+      uses: hashicorp/setup-terraform@v3
       with:
         cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 
@@ -37,10 +37,12 @@ jobs:
           python-version: "3.7"
 
     # Authenticate AWS Configure
-    - name: AWS Configure
-      run: aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
-      run: aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      run: aws configure set default.region us-east-1 
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: us-east-1
+        role-to-assume: ${IAM_ROLE_ARN}
+        role-session-name: MySessionName
           
     #Install AWSCLI
     - name: install AWS CLI
